@@ -10,9 +10,9 @@ from .. import core
 from . import routing
 
 
-class Hymod(core.model):
+class Hymod(core.Lumped):
     def __init__(self,*args,**kwargs):
-        super().__init__(*args,**kwargs)
+        super(Hymod, self).__init__(*args,**kwargs)
 
         self.P_LB = [1.0,
                      0.1,
