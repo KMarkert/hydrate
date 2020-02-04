@@ -1,49 +1,63 @@
 import warnings
 import numpy as np
-from . import core
+import xarray as xr
+from archhydro import core
 
-class Forcing(object):
-    def __init__(self,project,collection,bands=None,timestep='1D',reductions=None):
-        self.name = '{}/assets/{}'.format(project, collection)
-        self.project = project
-        self.id = collection
 
-        self.bands = bands
+class Forcing(core.Dataset):
+    def __init__(self, *args, bands=None, timestep='1D', reductions=None, **kwargs,):
+        super(Forcing, self).__init__(*args, **kwargs)
+        self._BANDS = bands
 
-        self.step = timestep
+        self._STEP = timestep
 
         if reductions != None:
             if type(reductions) != list:
-                reductions =[reductions]
+                reductions = [reductions]
 
             if (len(bands) == len(reductions)):
-                opts = {'mean':np.mean,'min':np.min,'max':np.max,'std':np.std,'sum':np.sum}
-                self.reducers = [opts[i] for i in reductions]
+                opts = {'mean': np.mean, 'min': np.min,
+                        'max': np.max, 'std': np.std, 'sum': np.sum}
+                self._REDUCERS = [opts[i] for i in reductions]
             else:
-                raise ValueError('the length of reductions must equal the length of bands')
+                raise ValueError(
+                    'the length of reductions must equal the length of bands')
 
         else:
-            self.reducers = None
+            self._REDUCERS = None
 
         return
 
-    def getTimeSeries(self,http,model):
-        data = core.getTimeSeries(http,self.project,self.collection,bands=bands,
-                    resolution=model.res,startTime=model.start,endTime=model.end,dims=model.dims,
-                    initPt=model.initPt)
+    @property
+    def bands(self):
+        return self._BANDS
 
-        if self.step != model.step:
+    @property
+    def timestep(self):
+        return self._STEP
+
+    def getModelDomain(self, model,maxWorkers=1,verbose=False):
+        data = self.getSeries(bands=self._BANDS,
+                              resolution=model.res, startTime=model.start, endTime=model.end, dims=model.dims,
+                              initPt=model.initPt,maxWorkers=maxWorkers,verbose=verbose)
+
+        if self._STEP != model.step:
             warnings.warn("selected forcing timestep is not equal to model timestep "
                           "continuing to process but there may be time misalignment")
 
-        if self.reducers != None:
+        if self._REDUCERS is not None:
             # out = data.copy()
-            for i,b in enumerate(self.bands):
+            for i, b in enumerate(self._BANDS):
                 if i == 0:
-                    out = data.resample(t=self.step).reduce(self.reducers[i],dim='t').transpose('y', 'x', 't')
+                    out = data.resample(time=self._STEP).reduce(
+                        self._REDUCERS[i], dim='t').transpose('lat', 'lon', 'time')
                 else:
-                    out[b][:,:,:] = data[b].resample(t=self.step).reduce(self.reducers[i],dim='t').values
+                    out[b][:, :, :] = data[b].resample(time=self._STEP).reduce(
+                        self._REDUCERS[i], dim='t').values
         else:
             out = data
 
-        return out
+        tempMask = xr.DataArray(
+            model.grid, coords=[out.lat, out.lon], dims=['lat', 'lon'])
+
+        return out.where(tempMask)

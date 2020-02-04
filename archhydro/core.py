@@ -5,40 +5,62 @@ import time
 import json
 import pickle
 import datetime
-import random,string
+import random
+import string
+from tqdm import tqdm
 from io import BytesIO
 from urllib.parse import urlencode
+from concurrent.futures import ThreadPoolExecutor
 
 import geojson
 import numpy as np
 import pandas as pd
 import xarray as xr
+from scipy import ndimage
 import geopandas as gpd
-from shapely import geometry,wkt
+from shapely import geometry, wkt
 from rasterstats import zonal_stats
 from affine import Affine
+from rasterio import features
+from pysheds.grid import Grid
+from pyproj import Proj
+
+from archhydro import utils
+
+ERROR_CODES = {400: "Bad request", 403: "Forbidden", 404: "Not found",
+               429: "Too many requests", 500: "Internal server error", }
 
 
-class model(object):
-    def __init__(self,name=None,startTime='2000-01-01',endTime='2001-12-31',timestep='1D',resolution=0,region=None,outputPath=None):
+class Model(object):
+    def __init__(self, name=None,
+                 startTime='2000-01-01',
+                 endTime='2001-12-31',
+                 timestep='1D',
+                 resolution=0,
+                 region=None,
+                 outputPath=None,
+                 verbose=False,
+                 maxWorkers=1):
         '''
 
         '''
-        if name != None:
+        if name is not None:
             self.name = name
         else:
-            self.name = ''.join([random.choice(string.ascii_letters + string.digits) for n in range(6)])
+            self.name = ''.join(
+                [random.choice(string.ascii_letters + string.digits) for n in range(6)])
 
-        if os.path.exists(outputPath) != True:
+        if outputPath is not None and os.path.exists(outputPath) is False:
             os.mkdir(outputPath)
 
-        if outputPath:
+        if outputPath is not None:
             self.path = outputPath
         else:
             raise ValueError('outputPath keyword needs to be explicitly set')
 
         if resolution <= 0:
-            raise ValueError('resolution keyword needs to defined as a positive value')
+            raise ValueError(
+                'resolution keyword needs to defined as a positive value')
         else:
             self.res = resolution
 
@@ -47,33 +69,41 @@ class model(object):
                 region_gdf = gpd.read_file(region)
                 self.basins = region_gdf
             except exception as e:
-                raise ValueError('region keyword parameter should be a geopandas geodataframe or file read in by geopandas',e)
+                raise ValueError(
+                    'region keyword parameter should be a geopandas geodataframe or file read in by geopandas', e)
         else:
             self.basins = region
 
-        self.step = timestep
+        if "1D" == timestep or "H" in timestep:
+            self.step = timestep
+        else:
+            raise ValueError(
+                f"Model timestep has to be at most 1D...{timestep} was provided")
 
         self.start = startTime
         self.end = endTime
 
         self.extent = self.roundOut(region.total_bounds)
-        self.box = gpd.GeoDataFrame(pd.DataFrame({'index':[0],'name':name,'coordinates':[geometry.box(*self.extent)]}),
-                                                      geometry='coordinates')
-        minx,miny,maxx,maxy = self.extent
+        self.box = gpd.GeoDataFrame(pd.DataFrame({'index': [0], 'name': name, 'coordinates': [geometry.box(*self.extent)]}),
+                                    geometry='coordinates')
+        minx, miny, maxx, maxy = self.extent
 
-        self.initPt = (minx,maxy)
+        self.initPt = (minx, maxy)
 
-        self.xx, self.yy = self.build_grid(self.extent,resolution)
-        self.dims = self.xx.shape
+        self.xx, self.yy = self.build_grid(self.extent, resolution)
+        self.dims = self.xx.shape[::-1]  # domain dimensions X,Y
 
-        self.gt = (minx,resolution,0,maxy,0,-resolution)
+        self.gt = Affine.from_gdal(
+            *(minx, resolution, 0, maxy, 0, -resolution))
+
+        self.grid = features.geometry_mask(
+            self.basins.geometry, self.dims[::-1], transform=self.gt, all_touched=True, invert=True)
 
         return
 
     # TODO: create a pretty printout
     # def __repr__(self):
     #     return
-
 
     def build_boundingBoxes(self):
         outDf = self.region.copy()
@@ -84,29 +114,73 @@ class model(object):
 
         return outDf
 
-    def roundOut(self,bb):
+    def roundOut(self, bb):
         minx = bb[0] - (bb[0] % self.res)
         miny = bb[1] - (bb[1] % self.res)
         maxx = bb[2] + (self.res - (bb[2] % self.res))
         maxy = bb[3] + (self.res - (bb[3] % self.res))
-        return minx,miny,maxx,maxy
+        return minx, miny, maxx, maxy
 
-    def timeSlice(self,time,columns=None):
-        return getTimeSlice(self.basins,time,columns)
+    def timeSlice(self, time, columns=None):
+        return getTimeSlice(self.basins, time, columns)
 
+    def _terrain(self, elv, variable="elevation",):
+        ratio = elvDim = [elv.dims['lon'], elv.dims["lat"]]
+        # get ratio of high resoltion to low resolution
+        ratio = [elvDim[i] / self.dims[i] for i in range(2)]
+        xres, yres = [self.res / r for r in ratio]
+        elvVals = np.squeeze(elv[variable].values)
+        compute_crs = Proj("EPSG:6933")
+        grid = Grid()
+        grid.add_gridded_data(data=elvVals,
+                              data_name='dem',
+                              affine=Affine.from_gdal(
+                                  *(self.initPt[0], xres, 0, self.initPt[1], 0, -yres)),
+                              crs=Proj("EPSG:4326"),
+                              nodata=-9999)
+        grid.mask = ~np.isnan(elvVals)
+        grid.fill_depressions(data='dem', out_name='flooded_dem')
+        grid.resolve_flats(data='flooded_dem', out_name='inflated_dem')
+        grid.flowdir(data='inflated_dem', out_name='dir', routing='d8')
+        grid.cell_dh(fdir='dir', dem="inflated_dem")
+
+        y, x = utils.dd2meters((self.yy, self.xx), scale=yres)
+
+        x = ndimage.zoom(x, zoom=ratio[0], order=0)
+        y = ndimage.zoom(y, zoom=ratio[1], order=0)
+
+        dist = utils.gridDistance(x, y, np.array(grid.dir))
+
+        slope = ((np.array(grid.dh) / dist) * 100)
+        slope[np.isnan(elvVals)] = np.nan
+        elv["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :])
+
+        return elv
 
     # why is this a static method???
     # is `build_grid` used anywhere???
     @staticmethod
-    def build_grid(bb,resolution):
-        minx,miny,maxx,maxy = bb
-        yCoords = np.arange(miny,maxy+resolution,resolution)[::-1]
-        xCoords = np.arange(minx,maxx+resolution,resolution)
+    def build_grid(bb, resolution):
+        minx, miny, maxx, maxy = bb
+        yCoords = np.arange(miny, maxy + resolution, resolution)[::-1]
+        xCoords = np.arange(minx, maxx + resolution, resolution)
 
-        return np.meshgrid(xCoords,yCoords)
+        return np.meshgrid(xCoords, yCoords)
 
 
-    def setLumpedForcing(self,timeSeries,keys=None,how='space',reducer='mean'):
+class Distributed(Model):
+    def __init__(self, *args, **kwargs):
+        super(Distributed, self).__init__(*args, **kwargs)
+
+        return
+
+
+class Lumped(Model):
+    def __init__(self, *args, **kwargs):
+        super(Lumped, self).__init__(*args, **kwargs)
+        return
+
+    def setLumpedForcing(self, timeSeries, keys=None, how='space', reducer='mean'):
         """
         resets the `basins` property with a same geopandas dataframe but with
         forcing time series for each of the keys provided
@@ -114,188 +188,261 @@ class model(object):
         if keys == None:
             keys = list(timeSeries.data_vars.keys())
 
-        args = [[i,j] for i in keys for j in range(timeSeries.dims['t'])]
+        args = [[i, j] for i in keys for j in range(timeSeries.dims['t'])]
 
         zs = list(map(lambda x:
-                list(map(lambda t:
-                    zonal_stats(self.basins,
-                        timeSeries[x].isel(t=t).values,
-                        affine=Affine.from_gdal(*(self.gt)),
-                        stats=[reducer],
-                        nodata=-9999.),
-                    range(timeSeries.dims['t']))
-                ),
-                keys)
-              )
+                      list(map(lambda t:
+                               zonal_stats(self.basins,
+                                           timeSeries[x].isel(t=t).values,
+                                           affine=Affine.from_gdal(*(self.gt)),
+                                           stats=[reducer],
+                                           nodata=-9999.),
+                               range(timeSeries.dims['t']))
+                           ),
+                      keys)
+                  )
 
         if how == 'space':
             out = self.basins.copy()
-            for i,key in enumerate(keys):
-                full= []
+            for i, key in enumerate(keys):
+                full = []
                 for j in range(len(self.basins)):
                     series = []
                     for t in zs[i]:
                         series.append(t[j][reducer])
-                    full.append({key:pd.Series(np.array(series),index=timeSeries.coords['t'].values)})
+                    full.append(
+                        {key: pd.Series(np.array(series), index=timeSeries.coords['t'].values)})
                 out = out.join(pd.DataFrame(full))
 
         elif how == 'time':
-            raise NotImplementedError('the selected aggregation in not implemented')
+            raise NotImplementedError(
+                'the selected aggregation in not implemented')
         else:
-            raise NotImplementedError('the selected aggregation in not implemented')
+            raise NotImplementedError(
+                'the selected aggregation in not implemented')
 
         self.basins = out
 
         return
 
-class distributed(object):
-    def __init__(self):
+
+class Dataset(object):
+    """
+    Basic level of dataset that interfaces with the EE API
+    Methods:
+        -
+    """
+
+    def __init__(self, session, project, collection,):
+        self._PROJECT = project
+        self._COLLECTION = collection
+        self._NAME = f"projects/{project}/assets/{collection}"
+        self._BASEURL = f"https://earthengine.googleapis.com/v1alpha/{self._NAME}"
+        self._SESSION = session
         return
 
-class lumped(object):
-    def __init__(self):
-        return
+    def listImages(self, startTime=None, endTime=None, region=None, maxWorkers=8):
+        t1 = datetime.datetime.strptime(startTime, '%Y-%m-%d')
+        t2 = datetime.datetime.strptime(
+            endTime, '%Y-%m-%d') + datetime.timedelta(1)
 
-
-def listImages(http,project,collection,startTime=None,endTime=None,region=None):
-    name = '{}/assets/{}'.format(project, collection)
-
-    t1 = datetime.datetime.strptime(startTime,'%Y-%m-%d')
-    t2 = datetime.datetime.strptime(endTime,'%Y-%m-%d')
-
-    dt = t2-t1
-    if dt.days > 100:
-        iters = int(np.ceil(dt.days/100))
-        ts = [t1+datetime.timedelta(100*i) for i in range(iters)]
-        if (t2-ts[-1]).days > 0:
-            ts[-1] = t2
-    else:
-        ts = [t1,t2]
-        iters = 2
-
-    results = []
-
-    for i in range(1,iters):
-        tStrStart = ts[i-1].strftime('%Y-%m-%d')
-        tStrEnd = ts[i].strftime('%Y-%m-%d')
-        url = 'https://earthengine.googleapis.com/v1/{}:listImages?{}'.format(name, urlencode({
-            'startTime': '{}T00:00:00.000Z'.format(tStrStart),
-            'endTime': '{}T00:00:00.000Z'.format(tStrEnd),
-            'region': json.dumps(region),
-        }))
-        (response, content) = http.request(url)
-
-        if response['status'] == '200':
-            assetList = json.loads(content)['assets']
-            results = results + assetList
+        dt = t2 - t1
+        if dt.days > 50:
+            iters = int(np.ceil(dt.days / 50))
+            ts = [t1 + datetime.timedelta(50 * i) for i in range(iters)]
+            if (t2 - ts[-1]).days > 0:
+                ts[-1] = t2
         else:
-            raise ValueError('Server returned a bad status of {}'.format(response['status']))
+            ts = [t1, t2]
+            iters = 2
 
-    return results
+        results, payloads = [], []
+        url = f'{self._BASEURL}:listImages'
 
+        for i in range(1, iters):
+            tStrStart = ts[i - 1].strftime('%Y-%m-%d')
+            tStrEnd = ts[i].strftime('%Y-%m-%d')
+            payloads.append({
+                'startTime': f"{tStrStart}T00:00:00.000Z",
+                'endTime': f"{tStrEnd}T00:00:00.000Z",
+                'region': json.dumps(region),
+            })
 
-def getMetadata(http,project,id):
-    name = '{}/assets/{}'.format(project, id)
-    url = 'https://earthengine.googleapis.com/v1/{}'.format(name)
-    (response, content) = http.request(url)
-    if response['status'] != '200':
-        raise ValueError('Server returned a bad status of {}'.format(response['status']))
-    asset = json.loads(content)
-    return asset
+        with ThreadPoolExecutor(maxWorkers) as executor:
+            responses = list(executor.map(
+                lambda x: self._SESSION.get(url, params=x), payloads))
 
-def getBands(http,project,asset):
-    asset = getMetadata(http,project,asset)
-    return  [str(band['id']) for band in asset['bands']]
+        for response in responses:
 
+            if response.status_code is 200:
+                content = response.json()
+                if "images" in content.keys():
+                    assetList = content['images']
+                    results = results + assetList
+            else:
+                code = response.status_code
+                raise ValueError(
+                    f"Server returned a bad status of {code}: {ERROR_CODES[code]}")
 
-def getPixels(http,project,asset,resolution=0.05,bands=None,initPt=[-180,85],dims=[256,256]):
-    name = '{}/assets/{}'.format(project, asset)
-    if bands == None:
-        bands = getBands(http,project,asset)
+        return results
 
-    url = 'https://earthengine.googleapis.com/v1/{}:getPixels'.format(name)
-    body = json.dumps({
-        'fileFormat': 'NPY',
-        'bandIds': bands,
-        'grid': {
-            "crsCode": "EPSG:4326",
-            'affineTransform': {
-                'scaleX': resolution,
-                'scaleY': -resolution,
-                'translateX': initPt[0],
-                'translateY': initPt[1],
+    def getMetadata(self, id=None):
+        if id is not None:
+            imgId = id.split('/')[-1]
+            response = self._SESSION.get(f'{self._BASEURL}/{imgId}')
+        else:
+            response = self._SESSION.get(self._BASEURL)
+        if response.status_code is not 200:
+            code = response.status_code
+            raise ValueError(
+                f"Server returned a bad status of {code}:{ERROR_CODES[code]}")
+        asset = response.json()
+        return asset
+
+    def getBands(self, id=None):
+        asset = self.getMetadata(id)
+        return [str(band['id']) for band in asset['bands']]
+
+    def getPixels(self, id=None, resolution=0.05, bands=None, initPt=[-180, 85], dims=[256, 256], maxRetries=5):
+        if bands == None:
+            bands = self.getBands(id)
+
+        if id is not None:
+            imgId = id.split('/')[-1]
+            url = f"{self._BASEURL}/{imgId}:getPixels"
+        else:
+            url = f"{self._BASEURL}:getPixels"
+
+        payload = json.dumps({
+            'fileFormat': 'NPY',
+            'bandIds': bands,
+            'grid': {
+                "crsCode": "EPSG:4326",
+                'affineTransform': {
+                    'scaleX': resolution,
+                    'scaleY': -resolution,
+                    'translateX': initPt[0],
+                    'translateY': initPt[1],
+                },
+                'dimensions': {'width': dims[0], 'height': dims[1]},
             },
-            'dimensions': {'width': dims[1], 'height': dims[0]},
-        },
-    })
-    (response, content) = http.request(url, method='POST', body=body)
+        })
+        retries = 1
+        while retries <= maxRetries:
+            response = self._SESSION.post(url, data=payload)
 
-    if response['status'] != '200':
-        raise ValueError('Server returned a bad status of {}'.format(response['status']))
+            if response.status_code is not 200:
+                t = utils.exponentialBackoff(retries)
+                time.sleep(t)
+                retries += 1
+            else:
+                break
 
-    result = np.load(BytesIO(content))
+        if response.status_code is not 200:
+            code = response.status_code
+            raise ValueError(
+                f"Server returned a bad status of {code}: {ERROR_CODES[code]}")
 
-    return result
+        result = np.load(BytesIO(response.content))
 
-def getTimeSeries(http,project,collection,resolution=0.05,startTime=None,endTime=None,
-                  bands=None,initPt=[-180,85],dims=[256,256]):
+        return result
 
-    xmin,ymin = initPt[0], initPt[1] + dims[0]*-resolution
-    xmax,ymax = initPt[0] + dims[1]*resolution, initPt[1]
-    box = [(xmin,ymin),(xmin,ymax),(xmax,ymax),(xmax,ymin),(xmin,ymin)]
-    region = geojson.Polygon([box])
+    def getSeries(self, resolution=0.05, startTime=None, endTime=None,
+                  bands=None, initPt=[-180, 85], dims=[256, 256], maxWorkers=8,
+                  verbose=False):
+        """
 
-    images = listImages(http,project,collection,startTime,endTime,region)
+        arguments:
+            resolution: spatial resolution in decimal degrees
+            startTime:
+            endTime:
+            bands: bands to request (default == all bands from dataset)
+            initPt: upper left beginning point of dataset
+            dims: number of pixels for dataset [X,Y]
 
-    if bands == None:
-        bands = getBands(http,project,images[0]['id'])
+        """
 
-    bandMetadata = getMetadata(http,project,images[0]['id'])
+        if maxWorkers <= 0:
+            maxWorkers = 1
 
-    dates,series = [],[]
+        gt = Affine.from_gdal(
+            *[initPt[0], resolution, 0., initPt[1], 0., -resolution])
 
-    referencet = pd.to_datetime('1970-01-01T00:00:00Z')
+        xmin, ymax = [np.around(v,decimal=4) for v in (gt * (0, 0))]
+        xmax, ymin = [np.around(v,decimal=4) for v in (gt * dims)]
+        box = [(xmin, ymin), (xmin, ymax), (xmax, ymax),
+               (xmax, ymin), (xmin, ymin)]
+        region = geojson.Polygon([box])
 
-    for i,img in enumerate(images):
-        t = (pd.to_datetime(img['startTime'])-referencet).total_seconds()
-        dates.append(t)
-        series.append(getPixels(http,project,img['id'],bands=bands,resolution=resolution,
-                                 initPt=initPt,dims=dims))
+        try:
+            images = self.listImages(startTime, endTime, region)
+            if bands == None:
+                bands = self.getBands(id=images[0]['id'])
 
-    dims = list(series[0][bands[0]].shape)
-    dims.append(len(series))
+            bandMetadata = self.getMetadata(id=images[0]['id'])
 
-    xx = np.arange(xmin,xmax,resolution)
-    yy = np.arange(ymin,ymax,resolution)
+        except:
+            bandMetadata = self.getMetadata()
+            images = [bandMetadata]
+            if bands == None:
+                bands = self.getBands()
 
-    # TODO: set better metadata/attributes on the output dataset
-    # include geo2d attributes
-    df = {'time':{'dims':('time'),'data':dates,
-            'attrs':{'unit':'seconds since 1970-01-01','calendar':"proleptic_gregorian"}},
-          'lon':{'dims':('lon'),'data':xx,
-            'attrs':{'long_name':"longitude",'units':"degrees_east"}},
-          'lat':{'dims':('lat'),'data':yy[::-1],
-            'attrs':{'long_name':"latitude",'units':"degrees_north"}}
-         }
+        dates, series, ids = [], [], []
 
-    for i in range(len(series)):
-        for j in bands:
-            if i == 0:
-                df[j] = {'dims':('lat','lon','time'),'data':np.zeros(dims)}
-            df[j]['data'][:,:,i] = series[i][j][:,:]
+        referencet = pd.to_datetime('1970-01-01T00:00:00Z')
+
+        ids = []
+        for i, img in enumerate(images):
+            # t = (pd.to_datetime(img['startTime']) - referencet).total_seconds()
+            dates.append(pd.to_datetime(img['startTime'], utc=False))
+            imgId = None if img['id'] == self._COLLECTION else img['id']
+            ids.append(imgId)
+
+        with ThreadPoolExecutor(maxWorkers) as executor:
+            gen = executor.map(lambda x: self.getPixels(id=x, bands=bands, resolution=resolution,
+                                                        initPt=initPt, dims=dims),
+                               ids)
+            if verbose:
+                # print(f"{self._COLLECTION} request progress:")
+                series = list(tqdm(gen, total=len(ids),
+                                   desc=f"{self._COLLECTION} progress"))
+            else:
+                series = list(gen)
+
+        dims = list(series[0][bands[0]].shape)
+        dims.append(len(series))
+
+        xx = np.arange(xmin, xmax, resolution)
+        yy = np.arange(ymin, ymax, resolution)
+
+        # TODO: set better metadata/attributes on the output dataset
+        # include geo2d attributes
+        df = {'time': {'dims': ('time'), 'data': dates,
+                       'attrs': {'unit': 'seconds since 1970-01-01', 'calendar': "proleptic_gregorian"}},
+              'lon': {'dims': ('lon'), 'data': xx,
+                      'attrs': {'long_name': "longitude", 'units': "degrees_east"}},
+              'lat': {'dims': ('lat'), 'data': yy[::-1],
+                      'attrs': {'long_name': "latitude", 'units': "degrees_north"}}
+              }
+
+        for i in range(len(series)):
+            for j in bands:
+                if i == 0:
+                    df[j] = {'dims': ('lat', 'lon', 'time'),
+                             'data': np.zeros(dims)}
+                df[j]['data'][:, :, i] = series[i][j][:, :]
+
+        outDs = xr.Dataset.from_dict(df)
+
+        attrs = self.getMetadata()
+        props = attrs.pop('properties')
+        attrs.update(props)
+        outDs.attrs = attrs
+
+        return outDs
 
 
-    outDs = xr.Dataset.from_dict(df)
-
-    attrs = getMetadata(http,project,collection)
-    props = attrs.pop('properties')
-    attrs.update(props)
-    outDs.attrs = attrs
-
-    return outDs
-
-
-def getTimeSlice(gdf,time,columns=None):
+def getTimeSlice(gdf, time, columns=None):
     if type(columns) == list:
         outDf = gdf.copy()
         for i in range(len(columns)):
@@ -316,6 +463,6 @@ def save_model(obj, filename):
 
 
 def open_model(filename):
-    with open(filname,'rb') as input:
+    with open(filname, 'rb') as input:
         model = pickle.load(input)
     return model
