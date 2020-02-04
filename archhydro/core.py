@@ -368,8 +368,12 @@ class Dataset(object):
         gt = Affine.from_gdal(
             *[initPt[0], resolution, 0., initPt[1], 0., -resolution])
 
-        xmin, ymax = [np.around(v,decimal=4) for v in (gt * (0, 0))]
-        xmax, ymin = [np.around(v,decimal=4) for v in (gt * dims)]
+        halfRes = resolution / 2
+
+        xmin, ymax= [np.around(v,decimals=6) for v in gt * (0, 0)]
+        xmax, ymin = [np.around(v,decimals=6) for v in gt * dims]
+
+
         box = [(xmin, ymin), (xmin, ymax), (xmax, ymax),
                (xmax, ymin), (xmin, ymin)]
         region = geojson.Polygon([box])
@@ -409,11 +413,13 @@ class Dataset(object):
             else:
                 series = list(gen)
 
-        dims = list(series[0][bands[0]].shape)
-        dims.append(len(series))
+        xrDims = list(series[0][bands[0]].shape)
+        xrDims.append(len(series))
 
-        xx = np.arange(xmin, xmax, resolution)
-        yy = np.arange(ymin, ymax, resolution)
+        xx = np.linspace(xmin+halfRes, xmax-halfRes, dims[0])
+        yy = np.linspace(ymin+halfRes, ymax-halfRes, dims[1])
+
+        # print(resolution,'\t',xstep,ystep)
 
         # TODO: set better metadata/attributes on the output dataset
         # include geo2d attributes
@@ -429,7 +435,7 @@ class Dataset(object):
             for j in bands:
                 if i == 0:
                     df[j] = {'dims': ('lat', 'lon', 'time'),
-                             'data': np.zeros(dims)}
+                             'data': np.zeros(xrDims)}
                 df[j]['data'][:, :, i] = series[i][j][:, :]
 
         outDs = xr.Dataset.from_dict(df)
