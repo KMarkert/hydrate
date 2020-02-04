@@ -562,7 +562,7 @@ class Vic(core.Distributed):
         return
 
     def execute(self):
-
+        return
 
     def setupFromConfig(self):
 
