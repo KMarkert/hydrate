@@ -44,7 +44,7 @@ RUN conda update -n base -c defaults conda -y \
     tqdm \
     numba \
     oauth2client \
-  && conda update --all -c conda-forge -y
+  && conda update --all -c conda-forge -y \
   && conda clean --all -f -y
 
 RUN pip install git+https://github.com/kmarkert/archhydro.git
