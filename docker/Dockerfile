@@ -2,15 +2,12 @@ FROM continuumio/miniconda3:latest
 
 # USER root
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    git \
-    && apt-get clean
-
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      build-essential \
+     vim \
      gcc \
+     git \
      libssl-dev \
      libffi-dev \
      dpkg-dev \
@@ -45,9 +42,11 @@ RUN conda update -n base -c defaults conda -y \
     numba \
     oauth2client \
   && conda update --all -c conda-forge -y \
+  && conda install -c conda-forge \
+    pyproj=2.1.3 \
   && conda clean --all -f -y
 
-RUN pip install git+https://github.com/kmarkert/archhydro.git
+RUN pip install git+https://github.com/kmarkert/hydrate.git
 
 RUN git clone https://github.com/uw-hydro/vic.git \
   && cd vic \
