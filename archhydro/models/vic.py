@@ -158,8 +158,8 @@ class Vic(core.Distributed):
         annual_precip = np.squeeze(precip.groupby(
             'time.year').sum().mean(dim="year").to_array()).values
 
-        gridLats = annual_precip.lat.values
-        gridLons = annual_precip.lon.values
+        gridLats = precip.lat.values
+        gridLons = precip.lon.values
         xx,yy = np.meshgrid(gridLons,gridLats)
 
         soilLayers = np.squeeze(soils.to_array()).values
