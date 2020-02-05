@@ -160,7 +160,6 @@ class Vic(core.Distributed):
 
         gridLats = precip.lat.values
         gridLons = precip.lon.values
-        xx,yy = np.meshgrid(gridLons,gridLats)
 
         soilLayers = np.squeeze(soils.to_array()).values
         soilLayers[np.isnan(soilLayers)] = 255
@@ -185,8 +184,8 @@ class Vic(core.Distributed):
                         # start passing information to simple variables
                         line.append("1")
                         line.append(f"{cnt}")  # grid cell id
-                        line.append(f"{yy[i,j]:.4f}")  # latitude
-                        line.append(f"{xx[i,j]:.4f}")  # longitude
+                        line.append(f"{gridLats[i]:.4f}")  # latitude
+                        line.append(f"{gridLons[j]:.4f}")  # longitude
                         # variable infiltration curve parameter
                         line.append(f"{b_val:.4f}")
                         line.append(f"{Ds_val:.4f}")  # Ds value
