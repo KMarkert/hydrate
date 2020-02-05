@@ -397,8 +397,7 @@ class Dataset(object):
 
         ids = []
         for i, img in enumerate(images):
-            # t = (pd.to_datetime(img['startTime']) - referencet).total_seconds()
-            dates.append(pd.to_datetime(img['startTime'], utc=False))
+            dates.append(pd.to_datetime(img['startTime'][:-1]))
             imgId = None if img['id'] == self._COLLECTION else img['id']
             ids.append(imgId)
 
@@ -407,7 +406,6 @@ class Dataset(object):
                                                         initPt=initPt, dims=dims),
                                ids)
             if verbose:
-                # print(f"{self._COLLECTION} request progress:")
                 series = list(tqdm(gen, total=len(ids),
                                    desc=f"{self._COLLECTION} progress"))
             else:
@@ -419,12 +417,12 @@ class Dataset(object):
         xx = np.linspace(xmin+halfRes, xmax-halfRes, dims[0])
         yy = np.linspace(ymin+halfRes, ymax-halfRes, dims[1])
 
-        # print(resolution,'\t',xstep,ystep)
-
         # TODO: set better metadata/attributes on the output dataset
         # include geo2d attributes
+                               #
+
         df = {'time': {'dims': ('time'), 'data': dates,
-                       'attrs': {'unit': 'seconds since 1970-01-01', 'calendar': "proleptic_gregorian"}},
+                      'attrs': {'unit': 'day', 'calendar': "gregorian"}},
               'lon': {'dims': ('lon'), 'data': xx,
                       'attrs': {'long_name': "longitude", 'units': "degrees_east"}},
               'lat': {'dims': ('lat'), 'data': yy[::-1],
