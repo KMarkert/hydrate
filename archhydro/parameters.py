@@ -18,7 +18,7 @@ class Parameter(core.Dataset):
     def bands(self):
         return self._BANDS
 
-    def getModelDomain(self, model, scaleFactor=1,maxWorkers=1,verbose=False):
+    def getModelDomain(self, model, scaleFactor=1,maxWorkers=2,verbose=False):
         """
         model - model class from archhydro core
         scaleFactor - factor to adjust the resolution of the dataset, scaleFactor of 2 increases the resolution by 2

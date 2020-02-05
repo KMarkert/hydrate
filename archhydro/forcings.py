@@ -36,7 +36,7 @@ class Forcing(core.Dataset):
     def timestep(self):
         return self._STEP
 
-    def getModelDomain(self, model,maxWorkers=1,verbose=False):
+    def getModelDomain(self, model,maxWorkers=2,verbose=False):
         data = self.getSeries(bands=self._BANDS,
                               resolution=model.res, startTime=model.start, endTime=model.end, dims=model.dims,
                               initPt=model.initPt,maxWorkers=maxWorkers,verbose=verbose)
