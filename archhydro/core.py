@@ -401,15 +401,20 @@ class Dataset(object):
             imgId = None if img['id'] == self._COLLECTION else img['id']
             ids.append(imgId)
 
-        with ThreadPoolExecutor(maxWorkers) as executor:
-            gen = executor.map(lambda x: self.getPixels(id=x, bands=bands, resolution=resolution,
-                                                        initPt=initPt, dims=dims),
-                               ids)
-            if verbose:
-                series = list(tqdm(gen, total=len(ids),
-                                   desc=f"{self._COLLECTION} progress"))
-            else:
-                series = list(gen)
+        seriesFunc = lambda x: self.getPixels(id=x, bands=bands, resolution=resolution,
+                                                    initPt=initPt, dims=dims)
+
+        if len(ids) < maxWorkers:
+            series = list(map(seriesFunc, ids))
+
+        else:
+            with ThreadPoolExecutor(maxWorkers) as executor:
+                gen = executor.map(seriesFunc,ids)
+                if verbose:
+                    series = list(tqdm(gen, total=len(ids),
+                                       desc=f"{self._COLLECTION} progress"))
+                else:
+                    series = list(gen)
 
         xrDims = list(series[0][bands[0]].shape)
         xrDims.append(len(series))
@@ -419,7 +424,6 @@ class Dataset(object):
 
         # TODO: set better metadata/attributes on the output dataset
         # include geo2d attributes
-                               #
 
         df = {'time': {'dims': ('time'), 'data': dates,
                       'attrs': {'unit': 'day', 'calendar': "gregorian"}},
