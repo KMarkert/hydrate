@@ -124,12 +124,13 @@ class Model(object):
     def timeSlice(self, time, columns=None):
         return getTimeSlice(self.basins, time, columns)
 
-    def _terrain(self, elv, variable="elevation",):
-        ratio = elvDim = [elv.dims['lon'], elv.dims["lat"]]
+    def _terrain(self, elvDs, variable="elevation",):
+        out = elvDs.copy()
+        ratio = elvDim = [elvDs.dims['lon'], elvDs.dims["lat"]]
         # get ratio of high resoltion to low resolution
         ratio = [elvDim[i] / self.dims[i] for i in range(2)]
         xres, yres = [self.res / r for r in ratio]
-        elvVals = np.squeeze(elv[variable].values)
+        elvVals = np.squeeze(elvDs[variable].values)
         compute_crs = Proj("EPSG:6933")
         grid = Grid()
         grid.add_gridded_data(data=elvVals,
@@ -153,9 +154,9 @@ class Model(object):
 
         slope = ((np.array(grid.dh) / dist) * 100)
         slope[np.isnan(elvVals)] = np.nan
-        elv["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :])
+        out["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :])
 
-        return elv
+        return out
 
     # why is this a static method???
     # is `build_grid` used anywhere???
