@@ -157,6 +157,11 @@ class Vic(core.Distributed):
         # prep input data
         annual_precip = np.squeeze(precip.groupby(
             'time.year').sum().mean(dim="year").to_array()).values
+
+        gridLats = annual_precip.lat.values
+        gridLons = annual_precip.lon.values
+        xx,yy = np.meshgrid(gridLons,gridLats)
+
         soilLayers = np.squeeze(soils.to_array()).values
         soilLayers[np.isnan(soilLayers)] = 255
         nLayers = soilLayers.shape[0]
@@ -180,8 +185,8 @@ class Vic(core.Distributed):
                         # start passing information to simple variables
                         line.append("1")
                         line.append(f"{cnt}")  # grid cell id
-                        line.append(f"{self.yy[i,j]:.4f}")  # latitude
-                        line.append(f"{self.xx[i,j]:.4f}")  # longitude
+                        line.append(f"{yy[i,j]:.4f}")  # latitude
+                        line.append(f"{xx[i,j]:.4f}")  # longitude
                         # variable infiltration curve parameter
                         line.append(f"{b_val:.4f}")
                         line.append(f"{Ds_val:.4f}")  # Ds value
