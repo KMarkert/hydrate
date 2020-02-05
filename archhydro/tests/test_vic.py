@@ -7,13 +7,13 @@ import archhydro as ah
 from archhydro.models import Vic
 
 
-mekong = gpd.read_file('./tnvalley_subbasin.geojson')
+tnv = gpd.read_file('./tnvalley_subbasin.geojson')
 
 session = ah.authorization.getSession(
     '../../credentials/ee-sandbox-credentials.json')
 
 model = Vic(name='mekong', startTime='2015-01-01', endTime='2015-12-31',
-            resolution=0.1, region=mekong, verbose=True, outputPath="./vic_test/")
+            resolution=0.1, region=tnv, verbose=True, outputPath="/home/vic_test/")
 
 
 # get precipitation time series for the basin
