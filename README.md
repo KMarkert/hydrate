@@ -1,4 +1,6 @@
-# archhydro
+# hydrate
+
+Hydrate is a Python package to setup and run hydrologic models using data from Earth Engine
 
 requirements:
 * array
