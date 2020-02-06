@@ -9,7 +9,7 @@ from rasterstats import zonal_stats
 from rasterio.features import shapes
 
 
-from .. import core
+from hydrate import core
 
 
 class Routing(object):

@@ -4,7 +4,7 @@ from scipy import ndimage
 import xarray as xr
 import json
 
-from archhydro import core
+from hydrate import core
 
 
 class Parameter(core.Dataset):

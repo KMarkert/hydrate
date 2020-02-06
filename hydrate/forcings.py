@@ -1,7 +1,7 @@
 import warnings
 import numpy as np
 import xarray as xr
-from archhydro import core
+from hydrate import core
 
 
 class Forcing(core.Dataset):

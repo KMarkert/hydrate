@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import datetime
 
-from .. import core
-from . import routing
+from hydrate import core
+from hydrate.models import routing
 
 
 class Hymod(core.Lumped):

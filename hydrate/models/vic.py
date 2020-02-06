@@ -6,9 +6,9 @@ import numpy as np
 import xarray as xr
 from concurrent.futures import ThreadPoolExecutor
 
-from archhydro import core
-from archhydro.models import routing
-from archhydro.lookups import *
+from hydrate import core
+from hydrate.models import routing
+from hydrate.lookups import *
 
 
 class Vic(core.Distributed):

@@ -25,7 +25,7 @@ from rasterio import features
 from pysheds.grid import Grid
 from pyproj import Proj
 
-from archhydro import utils
+from hydrate import utils
 
 ERROR_CODES = {400: "Bad request", 403: "Forbidden", 404: "Not found",
                429: "Too many requests", 500: "Internal server error", }
@@ -424,10 +424,10 @@ class Dataset(object):
         yy = np.linspace(ymin+halfRes, ymax-halfRes, dims[1])
 
         # TODO: set better metadata/attributes on the output dataset
-        # include geo2d attributes
+        # include geo2d attributes seconds since 1970-01-01 0:0:0
 
         df = {'time': {'dims': ('time'), 'data': dates,
-                      'attrs': {'unit': 'day', 'calendar': "gregorian"}},
+                      'attrs': {'unit': 'day'}},
               'lon': {'dims': ('lon'), 'data': xx,
                       'attrs': {'long_name': "longitude", 'units': "degrees_east"}},
               'lat': {'dims': ('lat'), 'data': yy[::-1],
