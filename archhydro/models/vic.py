@@ -43,6 +43,8 @@ class Vic(core.Distributed):
         self.vegParamLai = False
         self.vegParamAlb = False
 
+        self.parallel = parallelExecution
+
 
         return
 
@@ -603,14 +605,30 @@ class Vic(core.Distributed):
         return
 
     def execute(self,vicExe='vicNl',writeToLog=True):
+        cmd = f"which {vicExe}"
+        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out, err = proc.communicate()
 
+        if len(out) == 0:
+            raise OSError("could not find the model executable...please explicitly set the exe name or install the model in a system path")
+
+        cmd = f"{vicExe} -g {self.globPath}"
+
+        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out, err = proc.communicate()
+
+        if writeToLog and not self.parallel:
+            logFile = f"vic_{datetime.datetime.now().strftime('%Y%m%dT%H%M%s')}.log"
+            logPath = os.path.join(self.path,logFile)
+            with open(logPath,'w') as f:
+                f.write(out)
+
+        elif writeToLog and self.parallel:
+            # WARNING: need to warn about logging when running in parallel
+            pass
 
         return
 
     def setupFromConfig(self):
-
-        return
-
-    def readParams(self, path):
 
         return
