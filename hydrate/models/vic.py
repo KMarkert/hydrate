@@ -147,7 +147,7 @@ class Vic(core.Distributed):
         return
 
     def writeSoilParam(self, soils, elv, precip, soilVariables=None, elvVariable="elevation", precipVariable="precip",
-                       b_val=None, Ws_val=None, Ds_val=None, s2=None, s3=None, c=None):
+                       b_val=None, Ws_val=None, Ds_val=None, soilDepth1=0.1, soilDepth2=None, soilDepth3=None, c=None):
         soilLookup = SOILPARAMS["USDA"]
 
         cnt = 0  # counter
@@ -181,7 +181,7 @@ class Vic(core.Distributed):
             # need to add warning and stack at the first layer on itself to at least len==2
             pass
 
-        depths = [0.1, s2, s3]
+        depths = [soilDepth1,soilDepth2,soilDepth3]
 
         # open soil parameter file for writing
         with open(self.soilPath, 'w') as f:
@@ -633,7 +633,8 @@ class Vic(core.Distributed):
 
         return
 
-    def fluxToDataset(self,nodataVal=-999.):
+
+    def gridFluxes(self,nodataVal=-999.):
         fluxFiles = sorted([os.path.join(self.fluxPath,f) for f in os.listdir(self.fluxPath)])
 
         lats = np.array(sorted(list(set([float(f.split('_')[-2]) for f in fluxFiles]))))
@@ -689,6 +690,10 @@ class Vic(core.Distributed):
                  'nodata':nodataVal}
 
         return outDs.where(outDs!=nodataVal)
+
+    def rout(self,func, **kwargs):
+
+        return
 
 
     def setupFromConfig(self):
