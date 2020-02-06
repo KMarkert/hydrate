@@ -40,7 +40,8 @@ class Vic(core.Distributed):
         if not os.path.exists(fluxPath):
             os.mkdir(fluxPath)
 
-        cmd = "which vicNl"
+        self.vegParamLai = False
+        self.vegParamAlb = False
 
 
         return
@@ -52,6 +53,9 @@ class Vic(core.Distributed):
 
         startDt = datetime.datetime.strptime(self.start, "%Y-%m-%d")
         endDt = datetime.datetime.strptime(self.end, "%Y-%m-%d")
+
+        laiSrc = 'FROM_VEGPARAM' if self.vegParamLai else 'FROM_VEGLIB'
+        albSrc = 'FROM_VEGPARAM' if self.vegParamAlb else 'FROM_VEGLIB'
 
         text = []
         text.append(f'# VIC Model Parameters - 4.2')
@@ -98,15 +102,15 @@ class Vic(core.Distributed):
         # TRUE = veg lib file contains 12 monthly values of partial vegcover fraction for each veg class, between the LAI and albedo values
         text.append(f'VEGLIB_VEGCOVER\tFALSE')
         # TRUE = veg param file contains LAI information; FALSE = veg param file does NOT contain LAI information
-        text.append(f'VEGPARAM_LAI\tTRUE')
+        text.append(f'VEGPARAM_LAI\t{self.vegParamLai}'.upper())
         # TRUE = veg param file contains albedo information; FALSE = veg param file does NOT contain albedo information
-        text.append(f'VEGPARAM_ALB\tFALSE')
+        text.append(f'VEGPARAM_ALB\t{self.vegParamAlb}'.upper())
         # TRUE = veg param file contains veg_cover information; FALSE = veg param file does NOT contain veg_cover information
         text.append(f'VEGPARAM_VEGCOVER\tFALSE')
         # FROM_VEGPARAM = read LAI from veg param file; FROM_VEGLIB = read LAI from veg library file
-        text.append(f'LAI_SRC\tFROM_VEGLIB')
+        text.append(f'LAI_SRC\t{laiSrc}')
         # FROM_VEGPARAM = read albedo from veg param file; FROM_VEGLIB = read albedo from veg library file
-        text.append(f'ALB_SRC\tFROM_VEGLIB')
+        text.append(f'ALB_SRC\t{albSrc}')
         # FROM_VEGPARAM = read veg_cover from veg param file; FROM_VEGLIB = read veg_cover from veg library file
         text.append(f'VEGCOVER_SRC\tFROM_VEGLIB')
         # Number of snow bands; if number of snow bands > 1, you must insert the snow band path/file after the number of bands (e.g. SNOW_BAND 5 my_path/my_snow_band_file)
@@ -389,6 +393,18 @@ class Vic(core.Distributed):
         lcVals = landcover[variable].values
         lcVals[np.isnan(lcVals)] = 999
 
+        if lai is not None:
+            laiArr = np.squeeze(xr.where(np.isnan(lai),0,lai).to_array()).values
+            laiScale = float(lai.attrs['scale'])
+            laiArr = laiArr * laiScale
+            self.vegParamLai = True
+
+        if alb is not None:
+            albArr = np.squeeze(alb.to_array()).values
+            albScale = float(alb.attrs['scale'])
+            albArr = albArr * albScale
+            self.vegParamAlb = True
+
         # open output file for writing
         with open(self.vegPath, 'w') as f:
             cnt = 1  # grid cell id counter
@@ -450,6 +466,33 @@ class Vic(core.Distributed):
                                 f.write('\t{0} {1:.4f} {2} {3} {4} {5} {6} {7}\n'.format(
                                     vegcls, Cv, rdepth1, rfrac1, rdepth2, rfrac2, rdepth3, rfrac3))
 
+                                if lai is not None or alb is not None:
+                                    clsIdx = np.where(tmp==vegcls)
+                                    monLai,monAlb = [],[]
+                                    # loop over each month
+                                    for m in range(12):
+                                        # grab the month time slice
+                                        if lai is not None:
+                                            laiStep = laiArr[m, y1:y2, x1:x2]
+                                            clsLai = np.nanmean(laiStep[tmp==vegcls])
+                                            meanLai = np.nanmean(laiStep) # repeated computation ... can it be computed outside of loop?
+                                            laiVal = meanLai if np.isnan(clsLai) else clsLai
+                                            monLai.append(f"{laiVal:.4f}")
+
+                                        if alb is not None:
+                                            albStep = albArr[m, y1:y2, x1:x2]
+                                            clsAlb = np.nanmean(albStep[tmp==vegcls])
+                                            meanAlb = np.nanmean(albStep) # repeated computation ... can it be computed outside of loop?
+                                            albVal = meanAlb if np.isnan(clsAlb) else clsAlb
+                                            monAlb.append(f"{albVal:.4f}")
+
+                                if lai is not None:
+                                    f.write('\t'+'\t'.join(monLai)+'\n')
+                                if alb is not None:
+                                    f.write('\t'+'\t'.join(monAlb)+'\n')
+
+
+
                         cnt += 1  # plus one to grid cell id counter
 
         return
@@ -482,12 +525,6 @@ class Vic(core.Distributed):
                 # get attributes
                 attributes = vegLookup[cls]
 
-                # if i == waterCls:  # set default values for water
-                #     lai = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01,
-                #            0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
-                #     alb = [0.08, 0.08, 0.08, 0.08, 0.08, 0.08,
-                #            0.08, 0.08, 0.08, 0.08, 0.08, 0.08]
-
                 clsMask = lcVals==cls
                 overstory = int(attributes['overstory'])
                 vegHeight = float(attributes['h'])  # veg height
@@ -515,8 +552,8 @@ class Vic(core.Distributed):
                     # grab the data at location
                     monLai.append(f"{meanLai:.4f}")
                     monAlb.append(f"{meanAlb:.4f}")
-                    rough.append(f"{0.123 * vegHeight:.2f}")
-                    displace.append(f"{0.67 * vegHeight:.2f}")
+                    rough.append(f"{0.123 * vegHeight:.4f}")
+                    displace.append(f"{0.67 * vegHeight:.4f}")
 
                 line.append(f"{cls}") # vegetation class
                 line.append(f"{overstory}") # overstory value
@@ -565,7 +602,9 @@ class Vic(core.Distributed):
 
         return
 
-    def execute(self):
+    def execute(self,vicExe='vicNl',writeToLog=True):
+
+
         return
 
     def setupFromConfig(self):
