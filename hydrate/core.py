@@ -394,11 +394,14 @@ class Dataset(object):
 
         dates, series, ids = [], [], []
 
-        referencet = pd.to_datetime('1970-01-01T00:00:00Z')
+        referencet = pd.to_datetime('1970-01-01T00:00:00')
 
         ids = []
         for i, img in enumerate(images):
-            dates.append(pd.to_datetime(img['startTime'][:-1]))
+            if 'startTime' in img.keys():
+                dates.append(pd.to_datetime(img['startTime'][:-1]))
+            else:
+                dates.append(referencet)
             imgId = None if img['id'] == self._COLLECTION else img['id']
             ids.append(imgId)
 
