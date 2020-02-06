@@ -22,6 +22,7 @@ RUN conda update -n base -c defaults conda -y \
     python>=3.7 \
     ipython \
     xarray \
+    netcdf4 \
     numpy \
     pandas \
     geopandas \
@@ -44,6 +45,7 @@ RUN conda update -n base -c defaults conda -y \
   && conda update --all -c conda-forge -y \
   && conda install -c conda-forge \
     pyproj=2.1.3 \
+    proj4=6.1.0 \
   && conda clean --all -f -y
 
 RUN pip install git+https://github.com/kmarkert/hydrate.git
