@@ -3,7 +3,9 @@ import json
 import datetime
 import subprocess
 import numpy as np
+import pandas as pd
 import xarray as xr
+from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 
 from hydrate import core
@@ -52,6 +54,8 @@ class Vic(core.Distributed):
                          outputVars=["OUT_PREC","OUT_EVAP","OUT_RUNOFF","OUT_BASEFLOW","OUT_SWE","OUT_SOIL_MOIST"]):
 
         modStep = 24 if self.step == '1D' else int(self.step[:-1])
+
+        self.outputVars = outputVars
 
         startDt = datetime.datetime.strptime(self.start, "%Y-%m-%d")
         endDt = datetime.datetime.strptime(self.end, "%Y-%m-%d")
@@ -628,6 +632,64 @@ class Vic(core.Distributed):
             pass
 
         return
+
+    def fluxToDataset(self,nodataVal=-999.):
+        fluxFiles = sorted([os.path.join(self.fluxPath,f) for f in os.listdir(self.fluxPath)])
+
+        lats = np.array(sorted(list(set([float(f.split('_')[-2]) for f in fluxFiles]))))
+        lons = np.array(sorted(list(set([float(f.split('_')[-1]) for f in fluxFiles]))))
+
+        # check to make sure the order or lat/lon is correct
+        for i,file in enumerate(fluxFiles):
+            with open(file,'r') as f:
+                contents = f.readlines()
+                header = contents[:6]
+                header = [info.replace('#','').replace('\n','').strip() for info in header]
+                data = np.loadtxt(StringIO('\n'.join(contents[6:])))
+                data = data[:,3:]
+
+            thisLat = float(file.split('_')[-2])
+            thisLon = float(file.split('_')[-1])
+
+            if i == 0:
+                # get the date information from header
+                startTime = 'T'.join(header[2].split(' ')[-2:])
+                timeDelta = header[1].split(' ')[-1]+'H'
+                periods = int(header[0].split(' ')[-1])
+                dates = pd.date_range(startTime,periods=periods,freq=timeDelta)
+
+                variables = [v.strip() for v in header[-1].split('\t')[3:]]
+
+                df = {'time': {'dims': ('time'), 'data': dates,
+                              'attrs': {'unit': 'day'}},
+                      'lon': {'dims': ('lon'), 'data': lons,
+                              'attrs': {'long_name': "longitude", 'units': "degrees_east"}},
+                      'lat': {'dims': ('lat'), 'data': lats,
+                              'attrs': {'long_name': "latitude", 'units': "degrees_north"}}
+                      }
+
+                for v in variables:
+                    template = np.zeros((len(lats),len(lons),len(dates)))
+                    template[:,:,:] = nodataVal
+                    df[v] = {'dims': ('lat', 'lon', 'time'),
+                             'data': template}
+
+            latIdx = np.where(thisLat == lats)
+            lonIdx = np.where(thisLon == lons)
+            # print(file)
+            # print((thisLat,thisLon),(latIdx,lonIdx))
+
+            for j,v in enumerate(variables):
+                df[v]['data'][latIdx, lonIdx, :] = data[:,j]
+
+        outDs = xr.Dataset.from_dict(df)
+        attrs = {'title': "VIC hydrologic model outputs",
+                 'source': 'VIC Version 4.2.d 2015-June-20',
+                 'date_created': f'{datetime.datetime.now()}',
+                 'nodata':nodataVal}
+
+        return outDs.where(outDs!=nodataVal)
+
 
     def setupFromConfig(self):
 
