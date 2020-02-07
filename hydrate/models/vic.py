@@ -9,6 +9,7 @@ from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
 
 from hydrate import core
+from hydrate import utils
 from hydrate.models import routing
 from hydrate.lookups import *
 
@@ -156,7 +157,7 @@ class Vic(core.Distributed):
         # get ratio of high resoltion to low resolution
         ratio = [elvDim[i] / self.dims[i] for i in range(2)]
 
-        terrain = self._terrain(elv)
+        terrain = utils.terrain(elv)
         lowResTerrain = terrain.coarsen(
             lon=int(ratio[0])).mean().coarsen(lat=int(ratio[1])).mean()
 

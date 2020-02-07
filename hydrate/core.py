@@ -124,39 +124,6 @@ class Model(object):
     def timeSlice(self, time, columns=None):
         return getTimeSlice(self.basins, time, columns)
 
-    def _terrain(self, elvDs, variable="elevation",):
-        out = elvDs.copy()
-        ratio = elvDim = [elvDs.dims['lon'], elvDs.dims["lat"]]
-        # get ratio of high resoltion to low resolution
-        ratio = [elvDim[i] / self.dims[i] for i in range(2)]
-        xres, yres = [self.res / r for r in ratio]
-        elvVals = np.squeeze(elvDs[variable].values)
-        compute_crs = Proj("EPSG:6933")
-        grid = Grid()
-        grid.add_gridded_data(data=elvVals,
-                              data_name='dem',
-                              affine=Affine.from_gdal(
-                                  *(self.initPt[0], xres, 0, self.initPt[1], 0, -yres)),
-                              crs=Proj("EPSG:4326"),
-                              nodata=-9999)
-        grid.mask = ~np.isnan(elvVals)
-        grid.fill_depressions(data='dem', out_name='flooded_dem')
-        grid.resolve_flats(data='flooded_dem', out_name='inflated_dem')
-        grid.flowdir(data='inflated_dem', out_name='dir', routing='d8')
-        grid.cell_dh(fdir='dir', dem="inflated_dem")
-
-        y, x = utils.dd2meters((self.yy, self.xx), scale=yres)
-
-        x = ndimage.zoom(x, zoom=ratio[0], order=0)
-        y = ndimage.zoom(y, zoom=ratio[1], order=0)
-
-        dist = utils.gridDistance(x, y, np.array(grid.dir))
-
-        slope = ((np.array(grid.dh) / dist) * 100)
-        slope[np.isnan(elvVals)] = np.nan
-        out["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :])
-
-        return out
 
     # why is this a static method???
     # is `build_grid` used anywhere???

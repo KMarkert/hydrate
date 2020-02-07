@@ -1,4 +1,5 @@
 import numpy as np
+import richdem as rd
 
 def meters2dd(inPt,scale=30):
     """Function to convert meters to decimal degrees based on the approximation
@@ -73,6 +74,34 @@ def dd2meters(inPt,scale=0.1):
 
     # return list of converted resolution values
     return [y_meters,x_meters]
+
+def terrain(elvDs, variable="elevation",fillDem=True,flowMethod='D8'):
+    out = elvDs.copy()
+    # calculat the geospatial information from the dataset
+    elvDim = [elvDs.dims['lon'], elvDs.dims["lat"]]
+    xres = float((elvDs.lon[1]-elvDs.lon[0]).values)
+    yres = float((elvDs.lat[1]-elvDs.lat[0]).values)
+    xinit = float((elvDs.lon[0]).values)-(xres/2)
+    yinit = float((elvDs.lat[0]).values)+(yres/2)
+    # get elevation values as np.ndarray
+    elvVals = np.squeeze(elvDs[variable].values)
+    rdem = rd.rdarray(elvVals,
+                      no_data=np.nan,projection='epsg:4326',
+                      geotransform=(xinit,xres,0,yinit,0,yres))
+    if fillDem:
+        filled = rd.FillDepressions(rdem, epsilon=True, in_place=False,topology='D8')
+        breached = rd.BreachDepressions(filled, in_place=False,topology='D8')
+        rdem =rd.ResolveFlats(breached, in_place=False)
+
+
+    slope = rd.TerrainAttribute(rdem, attrib='slope_percentage')
+    accum = rd.FlowAccumulation(rdem, method=flowMethod)
+
+
+    out["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :]/100.)
+    out["flowAcc"] = (('time', 'lat', 'lon'), accum[np.newaxis, :, :])
+
+    return out
 
 def gridArea(x,y):
     return x*y
