@@ -22,7 +22,6 @@ from shapely import geometry, wkt
 from rasterstats import zonal_stats
 from affine import Affine
 from rasterio import features
-from pysheds.grid import Grid
 from pyproj import Proj
 
 from hydrate import utils

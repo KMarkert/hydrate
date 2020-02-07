@@ -1,6 +1,5 @@
 from numba import jit
 import numpy as np
-from pysheds.grid import Grid
 import xarray as xr
 from affine import Affine
 from pyproj import Proj
@@ -13,41 +12,29 @@ from hydrate import core
 
 
 class Routing(object):
-    def __init__(self,extent,flowMethod='d8',gauges=None):
+    def __init__(self,elv,flowMethod='d8',gauges=None):
         self.flowMethod = flowMethod
-        self.extent = extent
         self.gauges = gauges
+        self.grid = self._set_grid(elv)
         return
 
-    def cascading(model,outflowSeries=None):
-        raise NotImplementedError()
-        return
 
-    def get_elv(self,http,scaleFactor=1):
-        res = 0.002083333333333333 * scaleFactor
+    def _set_grid(self,elv,variable='elevation'):
+        dims = elv[variable].shape
+        grid = Grid()
+        xres = float((elv.lon[1]-elv.lon[0]).values)
+        yres = float((elv.lat[1]-elv.lat[0]).values)
+        xinit = float((elv.lon[0]).values)
+        yinit = float((elv.lat[0]).values)
+        grid.add_gridded_data(data=np.squeeze(elv[variable].values), data_name='dem',
+                              affine=Affine.from_gdal(*(xinit,xres,0,yinit,0,yres)),
+                              crs=Proj("EPSG:4326"),
+                              nodata=-9999)
+        grid.fill_depressions(data='dem', out_name='flooded_dem')
+        grid.resolve_flats(data='flooded_dem', out_name='inflated_dem')
+        grid.flowdir(data='inflated_dem', out_name='dir',routing=self.flowMethod)
 
-        assetId = 'projects/earthengine-public/assets/USGS/GMTED2010'
-
-        minx,miny,maxx,maxy = self.extent
-        yy,xx = np.arange(miny,maxy,res),np.arange(minx,maxx,res)
-        hiDims = (yy.size,xx.size)
-        pt = (self.extent[0],self.extent[-1])
-
-        srtm = core.getPixels(http,assetId,'be75',res,pt,hiDims)
-
-        df = {'x':{'dims':('x'),'data':xx},
-              'y':{'dims':('y'),'data':yy[::-1]},
-              'dem':{'dims':('y','x'),'data':srtm['be75']}
-              }
-
-        attrs = {'gt':(xx.min(),res,0,yy.max(),0,-res),
-                 'srs': '+init=epsg:4326 '
-                }
-
-        out = xr.Dataset.from_dict(df)
-        out.attrs = attrs
-
-        return out
+        return grid
 
 
     def streamOrder(self,network,maxDepth=10,maxDownstream=10):
@@ -87,18 +74,9 @@ class Routing(object):
 
         return network
 
-    # @classmethod
 
-    def elv_to_streams(self,elv,streamThreshold=10000,minLength=1000,**kwargs):
-        dims = elv.dem.shape
-        grid = Grid()
-        grid.add_gridded_data(data=elv.dem.values, data_name='dem',
-                              affine=Affine.from_gdal(*(elv.attrs['gt'])),
-                              crs=Proj(elv.attrs['srs']),
-                              nodata=-9999)
-        grid.fill_depressions(data='dem', out_name='flooded_dem')
-        grid.resolve_flats(data='flooded_dem', out_name='inflated_dem')
-        grid.flowdir(data='inflated_dem', out_name='dir',routing=self.flowMethod)
+    def elv_to_streams(self,streamThreshold=10000,minLength=1000,**kwargs):
+        grid = self.grid
         grid.accumulation(data='dir', out_name='acc',routing=self.flowMethod)
         row,col= np.unravel_index(grid.acc.argmax(),dims)
         grid.catchment(data=grid.dir, x=col, y=row, out_name='catch',
@@ -130,15 +108,12 @@ class Routing(object):
         # set final order based sorting
         ordered['finalOrder'] = [i for i in range(ordered.shape[0])]
 
-        self.grid = grid
-
         return ordered
 
 
-    def elv_to_sheds(self,elv,minArea=25000000,**kwargs):
-        base = np.zeros(elv.dem.shape,dtype=np.int16)
+    def getWatersheds(self,variable='elevation',minArea=25000000,**kwargs):
+        base = np.zeros(self.grid.shape,dtype=np.int16)
         subbasins = []
-        ordered = self.elv_to_streams(elv,**kwargs)
 
         if self.gauges == None:
             n = ordered.shape[0]
@@ -148,6 +123,7 @@ class Routing(object):
         for i in range(n):
             flip = (n-1) - i
             if self.gauges == None:
+                ordered = self.elv_to_streams(elv,**kwargs)
                 feature = ordered.iloc[flip] # get feature
                 coords = list(zip(*feature['geometry'].xy))[0] # make coords as list((x,y))
             else:
@@ -176,7 +152,7 @@ class Routing(object):
         subbasins['shedOrder'] = subbasins['raster_val'].max() - subbasins['raster_val']
         sortedBasins = subbasins.sort_values(by='shedOrder').reset_index()
 
-        return sortedBasins
+        return base
 
 
 @jit
@@ -189,4 +165,97 @@ def linearReservoir(x_slow,inflow,Rs):
 @jit
 def muskingum(inflow):
     raise NotImplementedError()
+    return
+
+@jit
+def lohmann(uh,runoff,baseflow,gaugeFrac,velocity=1.5,diffusion=800):
+    def make_irf(xmask,diff,velo):
+        """
+        Function for creating the impulse response function (IRF) for a grid cell
+        Arguments:
+            xmask -- longest path for any location within the grid cell to reach
+                     the stream channel [m]
+            diff -- diffusion value
+            velo -- overland flow velocity value
+        Returns:
+            irf -- normalized impulse response function for a grid cell
+        Keywords:
+            diff -- the diffusivity parameter (default 800) [m^2/s]
+            velo -- the flow velocity parameter (default 1.5) [m/s]
+        """
+        step = np.arange(0,48) #number of time steps
+        ir = np.zeros(step.size) # blank array for impulse response
+        t = 0.0 #time initialization in seconds
+
+        for i in step:
+            t = t + 3600. #time step of one day (in seconds)
+            pot = (velo * t - xmask)**2 / (4.0 * diff * t) # function name???
+            if pot > 69:
+                h = 0.0
+            else:
+                #impulse response function
+                h = 1.0/(2.0*np.sqrt(np.pi*diff)) * (xmask / (t**1.5)) * np.exp(-pot)
+
+            ir[i] = h # pass data to array element
+
+        irf = ir / ir.sum() #normalize the output IRF
+
+        return irf
+
+    def make_uh(xmask_val,uh_box,diff,velo):
+        """
+        Function for creating the unit hydrograph for a grid cell
+        Arguments:
+            xmask_val -- longest path for any location within the grid cell to reach
+                         the stream channel [m]
+            uh_box -- the monthly hydrograph (values 0-1)
+            diff -- diffusion value
+            velo -- overland flow velocity value
+        Keywords:
+            none
+        Returns:
+            uh -- UH hydrograph for the grid cell based on the IRF
+        """
+        irf = make_irf(xmask_val,diff,velo) #get the IRF of the grid cell
+
+        #defining constants and setting up
+        le = 48
+        ke = 12
+        uh_day = 96
+        tmax = uh_day * 24
+        uh_s = np.zeros(ke+uh_day)
+        uh_daily = np.zeros(uh_day)
+        fr = np.zeros([tmax,2])
+        if uh_box.sum() != 1.:
+            #normalize hydrograph if not already
+            uh_box = uh_box.astype(np.float) / uh_box.sum()
+
+        for i in range(24):
+            fr[i,0] = 1. / 24.
+
+        for t in range(tmax):
+            for l in range(le):
+                if t-l > 0:
+                    fr[t,1] = fr[t,1] + fr[t-l,0] * irf[l]
+
+            tt = int((t+23) / 24.)
+            uh_daily[tt-1] = uh_daily[tt-1]+fr[t,1]
+
+        # for each time period find the UH based on the IRF
+        for k in range(ke):
+            for u in range(uh_day):
+                uh_s[k+u-1] = uh_s[k+u-1] + uh_box[k] * uh_daily[u]
+
+        uh = uh_s / uh_s.sum() #normalize the ouput unit hydrograph
+
+        return uh
+
+    lfactor = 1E3 #convert mm to m
+    afactor = 1E6 #convert km^2 to m^2
+    tfactor = 86400. #convert day to second
+
+    # create blank arrays for ...
+    basinUH = np.zeros((idx[0].size,days)) # ...basin wide UH
+    gridUH = np.zeros((days+108,108)) # grid based UH
+
     return
