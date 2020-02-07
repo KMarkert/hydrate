@@ -77,6 +77,18 @@ def dd2meters(inPt,scale=0.1):
 
 def terrain(elvDs, variable="elevation",fillDem=True,flowMethod='D8'):
     out = elvDs.copy()
+
+    zScales = {
+        0:0.00000898,
+        10:0.00000912,
+        20:0.00000956,
+        30:0.00001036,
+        40:0.00001171,
+        50:0.00001395,
+        60:0.00001792,
+        70:0.00002619,
+        80:0.00005156
+    }
     # calculat the geospatial information from the dataset
     elvDim = [elvDs.dims['lon'], elvDs.dims["lat"]]
     xres = float((elvDs.lon[1]-elvDs.lon[0]).values)
@@ -85,20 +97,31 @@ def terrain(elvDs, variable="elevation",fillDem=True,flowMethod='D8'):
     yinit = float((elvDs.lat[0]).values)+(yres/2)
     # get elevation values as np.ndarray
     elvVals = np.squeeze(elvDs[variable].values)
-    rdem = rd.rdarray(elvVals,
-                      no_data=np.nan,projection='epsg:4326',
-                      geotransform=(xinit,xres,0,yinit,0,yres))
+    rdem = rd.rdarray(elvVals,no_data=np.nan)
+    rdem.projection ='''GEOGCS["WGS 84",
+                            DATUM["WGS_1984",
+                                SPHEROID["WGS 84",6378137,298.257223563,
+                                    AUTHORITY["EPSG","7030"]],
+                                AUTHORITY["EPSG","6326"]],
+                            PRIMEM["Greenwich",0,
+                                AUTHORITY["EPSG","8901"]],
+                            UNIT["degree",0.0174532925199433,
+                                AUTHORITY["EPSG","9122"]],
+                            AUTHORITY["EPSG","4326"]]
+                     '''
+    rdem.geotransform = (xinit,xres,0,yinit,0,yres)
     if fillDem:
         filled = rd.FillDepressions(rdem, epsilon=True, in_place=False,topology='D8')
         breached = rd.BreachDepressions(filled, in_place=False,topology='D8')
         rdem =rd.ResolveFlats(breached, in_place=False)
 
+    zScale = zScales[np.around(yinit,decimals=-1)]
 
-    slope = rd.TerrainAttribute(rdem, attrib='slope_percentage')
+    slope = rd.TerrainAttribute(rdem, attrib='slope_percentage',zscale=zScale)
     accum = rd.FlowAccumulation(rdem, method=flowMethod)
 
 
-    out["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :]/100.)
+    out["slope"] = (('time', 'lat', 'lon'), slope[np.newaxis, :, :])
     out["flowAcc"] = (('time', 'lat', 'lon'), accum[np.newaxis, :, :])
 
     return out
