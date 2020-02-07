@@ -36,16 +36,13 @@ RUN conda update -n base -c defaults conda -y \
     pyproj \
     rasterstats \
     rasterio \
-    pysheds \
+    richdem \
     geojson \
     backoff \
     tqdm \
     numba \
     oauth2client \
   && conda update --all -c conda-forge -y \
-  && conda install -c conda-forge \
-    pyproj=2.1.3 \
-    proj4=6.1.0 \
   && conda clean --all -f -y
 
 RUN pip install git+https://github.com/kmarkert/hydrate.git
