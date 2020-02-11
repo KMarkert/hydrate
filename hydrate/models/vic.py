@@ -7,6 +7,7 @@ import pandas as pd
 import xarray as xr
 from io import StringIO
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
 
 from hydrate import core
 from hydrate import utils
@@ -584,7 +585,7 @@ class Vic(core.Distributed):
 
     def writeForcing(self, forcings, variables, maxWorkers=8):
 
-        def writeSeries(pt):
+        def _writeSeries(pt):
             series = forcings.isel(lat=pt[1], lon=pt[0])
             lat, lon = series.lat.values, series.lon.values
 
@@ -604,7 +605,7 @@ class Vic(core.Distributed):
         pts = [[j, i] for i in range(self.dims[1]) for j in range(
             self.dims[0]) if self.grid[i, j] == True]
         with ThreadPoolExecutor(maxWorkers) as executor:
-            gen = executor.map(writeSeries, pts)
+            gen = executor.map(_writeSeries, pts)
             results = list(gen)
 
         return
@@ -626,7 +627,7 @@ class Vic(core.Distributed):
             logFile = f"vic_{datetime.datetime.now().strftime('%Y%m%dT%H%M%s')}.log"
             logPath = os.path.join(self.path,logFile)
             with open(logPath,'w') as f:
-                f.write(out)
+                f.write(out.decode())
 
         elif writeToLog and self.parallel:
             # WARNING: need to warn about logging when running in parallel
@@ -634,57 +635,59 @@ class Vic(core.Distributed):
 
         return
 
+    def _readFlux(self,args,**kwargs):
+        if kwargs is not None:
+            file = args[0]
+            variables = args[1]
 
-    def gridFluxes(self,nodataVal=-999.):
+        with open(file,'r') as f:
+            contents = f.readlines()
+            header = contents[:6]
+            header = [info.replace('#','').replace('\n','').strip() for info in header]
+            data = np.loadtxt(StringIO('\n'.join(contents[6:])))
+            data = data[np.newaxis,np.newaxis,:,3:]
+
+        lt,ln = [float(x) for x in file.split('_')[-2:]]
+
+        # get the date information from header
+        startTime = 'T'.join(header[2].split(' ')[-2:])
+        timeDelta = header[1].split(' ')[-1]+'H'
+        periods = int(header[0].split(' ')[-1])
+        dates = pd.date_range(startTime,periods=periods,freq=timeDelta)
+
+        ogVars = [v.strip() for v in header[-1].split('\t')[3:]]
+        vars = variables if variables is not None else ogVars
+
+        df = {'time': {'dims': ('time'), 'data': dates,
+                      'attrs': {'unit': 'day'}},
+              'lon': {'dims': ('lon'), 'data': np.array([ln]),
+                      'attrs': {'long_name': "longitude", 'units': "degrees_east"}},
+              'lat': {'dims': ('lat'), 'data': np.array([lt]),
+                      'attrs': {'long_name': "latitude", 'units': "degrees_north"}}
+              }
+
+        for v in vars:
+            vIdx = ogVars.index(v)
+            df[v] = {'dims': ('lat', 'lon', 'time')}
+            df[v]['data'] = data[:,:,:,vIdx]
+
+        return xr.Dataset.from_dict(df)
+
+    def gridFluxes(self,nodataVal=-999.,variables=None,maxWorkers=8):
+
+        maxCpu = mp.cpu_count() - 1
+
+        maxWorkers = maxWorkers if maxWorkers <= maxCpu else maxCpu
+
         fluxFiles = sorted([os.path.join(self.fluxPath,f) for f in os.listdir(self.fluxPath)])
 
-        lats = np.array(sorted(list(set([float(f.split('_')[-2]) for f in fluxFiles]))))
-        lons = np.array(sorted(list(set([float(f.split('_')[-1]) for f in fluxFiles]))))
+        args = zip(*(fluxFiles,[variables for i in fluxFiles]))
 
-        # check to make sure the order or lat/lon is correct
-        for i,file in enumerate(fluxFiles):
-            with open(file,'r') as f:
-                contents = f.readlines()
-                header = contents[:6]
-                header = [info.replace('#','').replace('\n','').strip() for info in header]
-                data = np.loadtxt(StringIO('\n'.join(contents[6:])))
-                data = data[:,3:]
+        with mp.Pool(processes=maxWorkers) as pool:
+            gen = pool.map_async(self._readFlux, args)
+            results = list(gen.get())
 
-            thisLat = float(file.split('_')[-2])
-            thisLon = float(file.split('_')[-1])
-
-            if i == 0:
-                # get the date information from header
-                startTime = 'T'.join(header[2].split(' ')[-2:])
-                timeDelta = header[1].split(' ')[-1]+'H'
-                periods = int(header[0].split(' ')[-1])
-                dates = pd.date_range(startTime,periods=periods,freq=timeDelta)
-
-                variables = [v.strip() for v in header[-1].split('\t')[3:]]
-
-                df = {'time': {'dims': ('time'), 'data': dates,
-                              'attrs': {'unit': 'day'}},
-                      'lon': {'dims': ('lon'), 'data': lons,
-                              'attrs': {'long_name': "longitude", 'units': "degrees_east"}},
-                      'lat': {'dims': ('lat'), 'data': lats,
-                              'attrs': {'long_name': "latitude", 'units': "degrees_north"}}
-                      }
-
-                for v in variables:
-                    template = np.zeros((len(lats),len(lons),len(dates)))
-                    template[:,:,:] = nodataVal
-                    df[v] = {'dims': ('lat', 'lon', 'time'),
-                             'data': template}
-
-            latIdx = np.where(thisLat == lats)
-            lonIdx = np.where(thisLon == lons)
-            # print(file)
-            # print((thisLat,thisLon),(latIdx,lonIdx))
-
-            for j,v in enumerate(variables):
-                df[v]['data'][latIdx, lonIdx, :] = data[:,j]
-
-        outDs = xr.Dataset.from_dict(df)
+        outDs = xr.combine_by_coords(results)
         attrs = {'title': "VIC hydrologic model outputs",
                  'source': 'VIC Version 4.2.d 2015-June-20',
                  'date_created': f'{datetime.datetime.now()}',
