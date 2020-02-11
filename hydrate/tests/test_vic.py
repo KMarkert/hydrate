@@ -36,7 +36,6 @@ basinSoil = soils.getModelDomain(model)
 dem = hyd.Parameter(session, "earthengine-public", "WWF/HydroSHEDS/03CONDEM")
 elv = dem.getModelDomain(model, scaleFactor=10).rename({"b1": "elevation"})
 
-
 # specify meteorological dataset bands to fetch
 metBands = ['maximum_2m_air_temperature',
             'minimum_2m_air_temperature',
@@ -65,7 +64,7 @@ alb = hyd.Parameter(session, "earthengine-legacy",
 basinAlb = alb.getModelDomain(model, scaleFactor=10)
 
 # wrtie the model soil parameter file
-model.writeSoilParam(basinSoil,elv,precip,b_val=0.2,Ws_val=0.85,Ds_val=0.00125,s2=0.2,s3=0.7,c=2)
+model.writeSoilParam(basinSoil,elv,precip,b_val=0.2,Ws_val=0.85,Ds_val=0.00125,soilDepth2=0.2,soilDepth3=0.7,c=2)
 # write model snow parameter file
 model.writeSnowParam(elv,interval=500)
 # write model vegetation parameter file
@@ -78,3 +77,5 @@ model.writeForcing(forcings,["PREC","TMAX","TMIN","WIND"],maxWorkers=8)
 model.writeGlobalParam()
 # run the model after setting up all of the parameters
 model.execute()
+# grab the output flux files and grid them into an xarray object
+fluxes = model.gridFluxes(maxWorkers=8)
