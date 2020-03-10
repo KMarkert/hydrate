@@ -112,8 +112,7 @@ def terrain(elvDs, variable="elevation",fillDem=True,flowMethod='D8'):
     rdem.geotransform = (xinit,xres,0,yinit,0,yres)
     if fillDem:
         filled = rd.FillDepressions(rdem, epsilon=True, in_place=False,topology='D8')
-        breached = rd.BreachDepressions(filled, in_place=False,topology='D8')
-        rdem =rd.ResolveFlats(breached, in_place=False)
+        rdem =rd.ResolveFlats(filled, in_place=False)
 
     zScale = zScales[np.around(yinit,decimals=-1)]
 
