@@ -1,0 +1,18 @@
+name: hydrate
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.7
+  - numpy
+  - geopandas>=0.7.0
+  - requests
+  - earthengine-api
+  - numba
+  - affine
+  - rasterstats
+  - xarray
+  - tqdm
+  - geojson
+  - richdem
+  - oauth2client
